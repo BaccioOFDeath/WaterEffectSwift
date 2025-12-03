@@ -49,6 +49,7 @@ struct WaterSimConfig {
     var particleLifetime: Float = 0.5 // Particle duration in seconds
     var particleSizeMin: Float = 2.0  // Minimum particle size
     var particleSizeMax: Float = 6.0  // Maximum particle size
+    var particleFeedbackStrength: Float = 0.2 // Secondary ripple strength from landing particles
 }
 
 final class RippleEngine: ObservableObject {
@@ -289,14 +290,19 @@ final class RippleEngine: ObservableObject {
         }
     }
     
-    /// Update particle physics
-    private func updateParticles(deltaTime: Float) {
+    /// Update particle physics and collect landing events for feedback
+    private func updateParticles(deltaTime: Float, viewSize: CGSize) -> [(position: SIMD2<Float>, strength: Float)] {
         let gravity = SIMD2<Float>(0, 500) // Downward gravity
         let drag: Float = 0.95 // Air resistance
         let lifetimeDecayRate = 1.0 / config.particleLifetime
         
+        var landingEvents: [(position: SIMD2<Float>, strength: Float)] = []
+        
         particles = particles.compactMap { particle in
             var p = particle
+            
+            // Store old position for landing detection
+            let oldY = p.position.y
             
             // Physics update
             p.velocity += gravity * deltaTime
@@ -306,9 +312,31 @@ final class RippleEngine: ObservableObject {
             // Lifetime decay
             p.lifetime -= deltaTime * lifetimeDecayRate
             
-            // Remove dead particles
-            return p.lifetime > 0 ? p : nil
+            // Check if particle landed (crossed a threshold or left view)
+            let landingThreshold = Float(viewSize.height) * 0.9 // 90% down screen
+            if oldY < landingThreshold && p.position.y >= landingThreshold && p.lifetime > 0.1 {
+                // Particle landed - create feedback event
+                let texWidth = RippleRenderer.shared.heightTextures[0].width
+                let texHeight = RippleRenderer.shared.heightTextures[0].height
+                
+                let texX = (p.position.x / Float(viewSize.width)) * Float(texWidth)
+                let texY = (p.position.y / Float(viewSize.height)) * Float(texHeight)
+                
+                if texX >= 0 && texX < Float(texWidth) && texY >= 0 && texY < Float(texHeight) {
+                    let impactStrength = length(p.velocity) * 0.0002 * config.particleFeedbackStrength
+                    landingEvents.append((position: SIMD2<Float>(texX, texY), strength: impactStrength))
+                }
+            }
+            
+            // Remove dead particles or those that left the screen
+            if p.lifetime <= 0 || p.position.y > Float(viewSize.height) * 1.2 {
+                return nil
+            }
+            
+            return p
         }
+        
+        return landingEvents
     }
     
     /// Apply global tilt bias from device motion
@@ -368,8 +396,18 @@ final class RippleEngine: ObservableObject {
             tiltBias: tiltBias
         )
         
-        // Update particles
-        updateParticles(deltaTime: dt)
+        // Update particles and get landing events for feedback
+        let landingEvents = updateParticles(deltaTime: dt, viewSize: viewSize)
+        
+        // Apply secondary ripples from particle landings
+        for event in landingEvents {
+            applyImpulse(
+                at: event.position,
+                strength: event.strength,
+                radius: 5.0, // Small ripple
+                commandBuffer: commandBuffer
+            )
+        }
         
         // Render
         let renderPass = RippleRenderer.shared.makeRenderPass(for: drawable.texture)

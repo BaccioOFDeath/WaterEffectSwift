@@ -172,6 +172,11 @@ struct SettingsView: View {
                             set: { config.maxParticles = Int($0) }
                         ), in: 50...500, step: 50)
                     }
+                    
+                    VStack(alignment: .leading) {
+                        Text("Particle Feedback: \(config.particleFeedbackStrength, specifier: "%.2f")")
+                        Slider(value: $config.particleFeedbackStrength, in: 0.0...1.0)
+                    }
                 }
                 
                 Section {
