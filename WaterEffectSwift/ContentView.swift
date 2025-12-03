@@ -124,9 +124,13 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Water Settings")
-            .navigationBarItems(trailing: Button("Done") {
-                isPresented = false
-            })
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        isPresented = false
+                    }
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.opacity(0.3))
