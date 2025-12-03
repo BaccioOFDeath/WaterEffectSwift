@@ -55,8 +55,9 @@ final class MotionManager: ObservableObject {
             let jerk = length(userAccel - self.previousAcceleration)
             self.previousAcceleration = userAccel
             
+            let jerkMultiplier: Float = 1.5 // Jerk is more sensitive than raw acceleration
             let currentTime = CACurrentMediaTime()
-            if (accelMagnitude > self.shakeDetectionThreshold || jerk > self.shakeDetectionThreshold * 1.5) &&
+            if (accelMagnitude > self.shakeDetectionThreshold || jerk > self.shakeDetectionThreshold * jerkMultiplier) &&
                (currentTime - self.lastShakeTime) > self.shakeCooldown {
                 self.lastShakeTime = currentTime
                 DispatchQueue.main.async {

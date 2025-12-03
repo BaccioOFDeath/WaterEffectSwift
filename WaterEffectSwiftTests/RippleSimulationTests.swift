@@ -17,8 +17,9 @@ final class RippleSimulationTests: XCTestCase {
         }
         
         // Zero velocity textures (RG format, 2 floats per pixel)
-        var velocityZeros = [Float](repeating: 0, count: count * 2)
-        let bytesPerRowDouble = w * MemoryLayout<Float>.stride * 2
+        let velocityComponentCount = 2 // vx, vy
+        var velocityZeros = [Float](repeating: 0, count: count * velocityComponentCount)
+        let bytesPerRowDouble = w * MemoryLayout<Float>.stride * velocityComponentCount
         for tex in renderer.velocityTextures {
             tex.replace(region: region, mipmapLevel: 0, withBytes: &velocityZeros, bytesPerRow: bytesPerRowDouble)
         }

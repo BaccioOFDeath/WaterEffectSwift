@@ -287,17 +287,24 @@ final class RippleRenderer {
         }
         
         // Create a procedural pattern (sand/pebble texture)
+        // Pre-allocate pixel buffer
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        
+        // Use simple deterministic hash instead of Random for performance
+        func hash2D(_ x: Int, _ y: Int) -> Float {
+            let h = UInt32(x * 73856093) ^ UInt32(y * 19349663)
+            return Float(h % 10000) / 10000.0
+        }
         
         for y in 0..<height {
             for x in 0..<width {
                 let idx = (y * width + x) * 4
                 
-                // Create a subtle sand/pebble pattern
-                let noise = Float.random(in: 0...1)
+                // Create a subtle sand/pebble pattern with deterministic hash
+                let noise = hash2D(x, y)
                 let baseColor: Float = 0.6 + noise * 0.2
                 
-                // Add some variation
+                // Add some variation with simple trig pattern
                 let patternX = Float(x) / 30.0
                 let patternY = Float(y) / 30.0
                 let pattern = sin(patternX) * cos(patternY) * 0.1 + 0.9

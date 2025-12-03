@@ -137,7 +137,8 @@ kernel void apply_impulse_anisotropic(texture2d<float, access::read_write> heigh
     float2 delta = pos - position;
     
     // Compute anisotropic distance
-    float2 dirNorm = normalize(direction + float2(0.001)); // Avoid zero division
+    constant float kEpsilon = 0.001; // Small value to avoid division by zero
+    float2 dirNorm = normalize(direction + float2(kEpsilon));
     float2 perpDir = float2(-dirNorm.y, dirNorm.x);
     
     float alongDist = dot(delta, dirNorm);

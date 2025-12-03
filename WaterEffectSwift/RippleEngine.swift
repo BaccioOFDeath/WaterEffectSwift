@@ -291,6 +291,10 @@ final class RippleEngine: ObservableObject {
     }
     
     /// Update particle physics and collect landing events for feedback
+    /// - Parameters:
+    ///   - deltaTime: Time step for physics integration
+    ///   - viewSize: Size of the view for position conversion
+    /// - Returns: Array of landing events with position and impact strength for creating secondary ripples
     private func updateParticles(deltaTime: Float, viewSize: CGSize) -> [(position: SIMD2<Float>, strength: Float)] {
         let gravity = SIMD2<Float>(0, 500) // Downward gravity
         let drag: Float = 0.95 // Air resistance
