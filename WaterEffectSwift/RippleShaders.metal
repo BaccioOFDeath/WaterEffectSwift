@@ -7,9 +7,11 @@ struct SimParams {
     float viscosity;      // Velocity diffusion (0.0-0.01)
     float waveSpeed;      // Wave propagation speed (0.5-2.0)
     float dt;             // Timestep (auto-calculated for stability)
+    float2 tiltBias;      // Global acceleration from device tilt
+    float boundaryDamping; // Energy loss at boundaries (0.5-0.95)
 };
 
-// Shallow-water heightfield update: computes new height from velocity
+// Shallow-water heightfield update: computes new height from velocity divergence
 kernel void height_update(texture2d<float, access::read>  heightIn  [[texture(0)]],
                           texture2d<float, access::read>  velocityIn [[texture(1)]],
                           texture2d<float, access::write> heightOut  [[texture(2)]],
@@ -19,10 +21,23 @@ kernel void height_update(texture2d<float, access::read>  heightIn  [[texture(0)
     if (gid.x >= size.x || gid.y >= size.y) return;
     
     float h = heightIn.read(gid).r;
-    float v = velocityIn.read(gid).r;
     
-    // Semi-implicit integration: h' = h + v * dt
-    float newH = h + v * params.dt;
+    // Read neighbor velocities for divergence calculation
+    uint2 left  = uint2(max(int(gid.x) - 1, 0), gid.y);
+    uint2 right = uint2(min(gid.x + 1, size.x - 1), gid.y);
+    uint2 up    = uint2(gid.x, max(int(gid.y) - 1, 0));
+    uint2 down  = uint2(gid.x, min(gid.y + 1, size.y - 1));
+    
+    float2 vL = velocityIn.read(left).rg;
+    float2 vR = velocityIn.read(right).rg;
+    float2 vU = velocityIn.read(up).rg;
+    float2 vD = velocityIn.read(down).rg;
+    
+    // Compute velocity divergence: div(v) = dvx/dx + dvy/dy
+    float divergence = (vR.x - vL.x) * 0.5 + (vD.y - vU.y) * 0.5;
+    
+    // Height change is proportional to negative divergence
+    float newH = h - divergence * params.dt;
     
     // Apply damping to height
     newH *= params.damping;
@@ -30,7 +45,7 @@ kernel void height_update(texture2d<float, access::read>  heightIn  [[texture(0)
     heightOut.write(float4(newH, 0, 0, 0), gid);
 }
 
-// Shallow-water velocity update: computes new velocity from height gradients
+// Shallow-water velocity update: computes new 2D velocity from height gradients
 kernel void velocity_update(texture2d<float, access::read>  heightIn    [[texture(0)]],
                             texture2d<float, access::read>  velocityIn  [[texture(1)]],
                             texture2d<float, access::write> velocityOut [[texture(2)]],
@@ -45,24 +60,39 @@ kernel void velocity_update(texture2d<float, access::read>  heightIn    [[textur
     uint2 up    = uint2(gid.x, max(int(gid.y) - 1, 0));
     uint2 down  = uint2(gid.x, min(gid.y + 1, size.y - 1));
     
+    float hC = heightIn.read(gid).r;
     float hL = heightIn.read(left).r;
     float hR = heightIn.read(right).r;
     float hU = heightIn.read(up).r;
     float hD = heightIn.read(down).r;
     
-    // Compute Laplacian for diffusion/wave propagation
-    float laplacian = (hL + hR + hU + hD - 4.0 * heightIn.read(gid).r);
+    // Compute pressure gradients (negative of height gradients)
+    float2 gradient = float2((hR - hL) * 0.5, (hD - hU) * 0.5);
     
-    float v = velocityIn.read(gid).r;
+    // Read current 2D velocity (stored in RG channels)
+    float2 v = velocityIn.read(gid).rg;
     
-    // Wave equation: v' = v + waveSpeed^2 * laplacian * dt - viscosity * v
-    float acceleration = params.waveSpeed * params.waveSpeed * laplacian;
-    float newV = v + acceleration * params.dt - params.viscosity * v;
+    // Acceleration from pressure gradient and tilt bias
+    float2 acceleration = -params.waveSpeed * params.waveSpeed * gradient + params.tiltBias;
     
-    // Apply damping to velocity
+    // Update velocity with acceleration
+    float2 newV = v + acceleration * params.dt;
+    
+    // Apply viscosity (velocity damping)
+    newV -= params.viscosity * newV;
+    
+    // Boundary damping: reduce velocity near edges
+    float boundaryDist = min(min(float(gid.x), float(size.x - 1 - gid.x)),
+                             min(float(gid.y), float(size.y - 1 - gid.y)));
+    float boundaryFactor = smoothstep(0.0, 10.0, boundaryDist);
+    float edgeDamping = mix(params.boundaryDamping, 1.0, boundaryFactor);
+    
+    newV *= edgeDamping;
+    
+    // Apply global damping
     newV *= params.damping;
     
-    velocityOut.write(float4(newV, 0, 0, 0), gid);
+    velocityOut.write(float4(newV.x, newV.y, 0, 0), gid);
 }
 
 // Apply a Gaussian impulse to the height field
@@ -89,6 +119,91 @@ kernel void apply_impulse(texture2d<float, access::read_write> heightTex [[textu
         
         heightTex.write(float4(newH, 0, 0, 0), gid);
     }
+}
+
+// Apply an anisotropic Gaussian impulse to the height field (for directional wakes)
+kernel void apply_impulse_anisotropic(texture2d<float, access::read_write> heightTex [[texture(0)]],
+                                     texture2d<float, access::read_write> velocityTex [[texture(1)]],
+                                     constant float2 &position                         [[buffer(0)]],
+                                     constant float2 &direction                        [[buffer(1)]],
+                                     constant float &strength                          [[buffer(2)]],
+                                     constant float &radius                            [[buffer(3)]],
+                                     constant float &anisotropy                        [[buffer(4)]],
+                                     uint2 gid                                         [[thread_position_in_grid]]) {
+    uint2 size = uint2(heightTex.get_width(), heightTex.get_height());
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    
+    float2 pos = float2(gid);
+    float2 delta = pos - position;
+    
+    // Compute anisotropic distance
+    float2 dirNorm = normalize(direction + float2(0.001)); // Avoid zero division
+    float2 perpDir = float2(-dirNorm.y, dirNorm.x);
+    
+    float alongDist = dot(delta, dirNorm);
+    float perpDist = dot(delta, perpDir);
+    
+    // Stretch in perpendicular direction (wake is narrow along motion)
+    float dist = length(float2(alongDist, perpDist / (1.0 + anisotropy)));
+    
+    if (dist < radius) {
+        // Gaussian falloff with anisotropic shape
+        float sigma = radius / 3.0;
+        float gaussian = exp(-dist * dist / (2.0 * sigma * sigma));
+        
+        // Apply impulse to height
+        float currentH = heightTex.read(gid).r;
+        float impulse = strength * gaussian;
+        float newH = currentH + impulse;
+        heightTex.write(float4(newH, 0, 0, 0), gid);
+        
+        // Also impart velocity in direction of motion
+        float2 currentV = velocityTex.read(gid).rg;
+        float2 velocityImpulse = direction * strength * gaussian * 0.5;
+        float2 newV = currentV + velocityImpulse;
+        velocityTex.write(float4(newV.x, newV.y, 0, 0), gid);
+    }
+}
+
+// Compute foam mask from height curvature and velocity magnitude
+kernel void compute_foam(texture2d<float, access::read>  heightIn  [[texture(0)]],
+                         texture2d<float, access::read>  velocityIn [[texture(1)]],
+                         texture2d<float, access::write> foamOut    [[texture(2)]],
+                         constant float &foamThreshold              [[buffer(0)]],
+                         uint2 gid                                  [[thread_position_in_grid]]) {
+    uint2 size = uint2(heightIn.get_width(), heightIn.get_height());
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    
+    // Read neighbors for curvature calculation
+    uint2 left  = uint2(max(int(gid.x) - 1, 0), gid.y);
+    uint2 right = uint2(min(gid.x + 1, size.x - 1), gid.y);
+    uint2 up    = uint2(gid.x, max(int(gid.y) - 1, 0));
+    uint2 down  = uint2(gid.x, min(gid.y + 1, size.y - 1));
+    
+    float hC = heightIn.read(gid).r;
+    float hL = heightIn.read(left).r;
+    float hR = heightIn.read(right).r;
+    float hU = heightIn.read(up).r;
+    float hD = heightIn.read(down).r;
+    
+    // Compute Laplacian (curvature)
+    float curvature = abs((hL + hR + hU + hD - 4.0 * hC));
+    
+    // Get velocity magnitude
+    float2 v = velocityIn.read(gid).rg;
+    float velocityMag = length(v);
+    
+    // Foam appears at high curvature or high velocity regions
+    float foam = smoothstep(foamThreshold, foamThreshold * 2.0, curvature + velocityMag * 0.1);
+    
+    // Boundary foam: add foam near edges
+    float boundaryDist = min(min(float(gid.x), float(size.x - 1 - gid.x)),
+                             min(float(gid.y), float(size.y - 1 - gid.y)));
+    float boundaryFoam = smoothstep(5.0, 0.0, boundaryDist) * 0.5;
+    
+    foam = saturate(foam + boundaryFoam);
+    
+    foamOut.write(float4(foam, foam, foam, 1.0), gid);
 }
 
 // Generate normal map from height field using finite differences
@@ -144,7 +259,14 @@ vertex VertexOut quad_vert(QuadVertex in [[stage_in]]) {
 fragment float4 quad_frag(VertexOut in [[stage_in]],
                           texture2d<float, access::sample> heightMap [[texture(0)]],
                           texture2d<float, access::sample> normalMap [[texture(1)]],
-                          sampler s [[sampler(0)]]) {
+                          texture2d<float, access::sample> foamMap   [[texture(2)]],
+                          texture2d<float, access::sample> backgroundTex [[texture(3)]],
+                          sampler s [[sampler(0)]],
+                          constant float &refractionScale   [[buffer(0)]],
+                          constant float &specularStrength  [[buffer(1)]],
+                          constant float &fresnelStrength   [[buffer(2)]],
+                          constant float &rimLightIntensity [[buffer(3)]],
+                          constant float &foamIntensity     [[buffer(4)]]) {
     float2 uv = in.uv;
     
     // Sample height and normal
@@ -178,26 +300,32 @@ fragment float4 quad_frag(VertexOut in [[stage_in]],
     
     // Fresnel approximation (Schlick's approximation)
     float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0);
-    fresnel = fresnel * 0.5 + 0.5; // Modulate
+    fresnel = mix(1.0, fresnel, fresnelStrength);
     
-    specular *= fresnel;
+    specular *= fresnel * specularStrength;
     
     // Rim lighting on steep slopes
     float rim = 1.0 - abs(normal.z);
-    rim = pow(rim, 3.0) * 0.3;
+    rim = pow(rim, 3.0) * rimLightIntensity;
     
     // Refraction distortion (offset UV by normal)
-    float2 refractUV = uv + normal.xy * 0.02;
+    float2 refractUV = uv + normal.xy * refractionScale;
     refractUV = clamp(refractUV, 0.0, 1.0);
     
-    // Background (gradient for now, could be a texture)
-    float3 background = float3(0.5, 0.6, 0.7) * (1.0 - refractUV.y * 0.3);
+    // Sample background texture with refraction
+    float3 background = backgroundTex.sample(s, refractUV).rgb;
+    
+    // Sample foam
+    float foam = foamMap.sample(s, uv).r * foamIntensity;
     
     // Combine: base color with lighting, refraction, specular, and rim
     float3 finalColor = baseColor * diffuse;
     finalColor = mix(finalColor, background, 0.3); // Refraction blend
-    finalColor += float3(1.0) * specular * 0.8;    // Specular highlights
+    finalColor += float3(1.0) * specular;           // Specular highlights
     finalColor += float3(0.3, 0.5, 0.7) * rim;     // Rim light
+    
+    // Add foam (white caps)
+    finalColor = mix(finalColor, float3(1.0, 1.0, 1.0), foam);
     
     // Add height-based brightness for visualization
     float brightness = h * 0.1 + 0.5;
