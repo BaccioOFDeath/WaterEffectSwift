@@ -12,7 +12,10 @@ final class RippleEngine: ObservableObject {
         // Convert to texture space (0 .. width-1, 0 .. height-1) using renderer texture size
         let t = RippleRenderer.shared.textures[RippleRenderer.shared.src]
         let rawX = Int((p.x / vs.width) * CGFloat(t.width))
-        let rawY = Int((1 - p.y / vs.height) * CGFloat(t.height))
+        // Map view Y (origin at top) to texture Y. The previous code inverted Y (1 - ...)
+        // which caused upward touches to appear downward; remove the inversion so
+        // p.y increases downward maps directly to increasing texture Y.
+        let rawY = Int((p.y / vs.height) * CGFloat(t.height))
         // Clamp coordinates to valid texture range
         let x = max(0, min(rawX, t.width - 1))
         let y = max(0, min(rawY, t.height - 1))
