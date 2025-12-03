@@ -11,8 +11,16 @@ final class RippleSimulationTests: XCTestCase {
         let region = MTLRegionMake2D(0, 0, w, h)
         let bytesPerRow = w * MemoryLayout<Float>.stride
         
-        for tex in renderer.heightTextures + renderer.velocityTextures {
+        // Zero height textures
+        for tex in renderer.heightTextures {
             tex.replace(region: region, mipmapLevel: 0, withBytes: &zeros, bytesPerRow: bytesPerRow)
+        }
+        
+        // Zero velocity textures (RG format, 2 floats per pixel)
+        var velocityZeros = [Float](repeating: 0, count: count * 2)
+        let bytesPerRowDouble = w * MemoryLayout<Float>.stride * 2
+        for tex in renderer.velocityTextures {
+            tex.replace(region: region, mipmapLevel: 0, withBytes: &velocityZeros, bytesPerRow: bytesPerRowDouble)
         }
     }
 

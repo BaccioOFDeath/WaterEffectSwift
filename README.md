@@ -5,23 +5,30 @@ A realistic, GPU-accelerated water surface simulation for iOS with interactive t
 ## Features
 
 ✨ **Realistic Physics**
-- Shallow water equations with separated height/velocity fields
-- Stable semi-implicit integration
+- 2D velocity field-based shallow water equations
+- Container boundaries with reflection and absorption
+- Device tilt-driven sloshing (gravity-coupled dynamics)
+- Shake detection for dramatic wave impulses
+- Stable semi-implicit integration with CFL timestep
 - Natural wave propagation and dispersion
-- Configurable damping and viscosity
+- Configurable damping, viscosity, and boundary behavior
 
 🎨 **Beautiful Rendering**
 - Dynamic normal mapping for lighting
+- Procedural background texture with realistic refraction
 - Fresnel-based specular highlights
-- Screen-space refraction/distortion
+- Foam/whitecap generation from wave curvature
 - Depth-based coloring with rim lighting
+- Configurable visual parameters (refraction, specular, fresnel, foam)
 - Smooth particle effects for splashes
 
 👆 **Smart Touch Handling**
 - Touch event coalescing eliminates "thousand touches" artifact
+- Anisotropic impulses create directional wakes for fast swipes
 - Velocity-based impulse scaling
 - Smooth Gaussian impulse distribution
 - Multi-touch support with natural wave interaction
+- Directional particle spawning along motion path
 
 ⚡ **Performance Optimized**
 - GPU compute shaders for physics simulation
@@ -45,22 +52,21 @@ A realistic, GPU-accelerated water surface simulation for iOS with interactive t
 
 ## Configuration
 
-The app includes a settings panel to adjust:
+The app includes a comprehensive settings panel to adjust:
 
-- **Physics**: Damping, viscosity, wave speed
-- **Touch Response**: Impulse strength, radius, velocity sensitivity
-- **Visual**: Normal map intensity
-- **Particles**: Splash threshold, particle count
+- **Physics**: Damping, viscosity, wave speed, boundary damping
+- **Motion Response**: Tilt sensitivity, shake intensity
+- **Touch Response**: Impulse strength, radius, velocity sensitivity, wake elongation
+- **Visual**: Normal strength, refraction, specular, fresnel, rim light, foam intensity/threshold
+- **Particles**: Splash threshold, particle count, lifetime, size range
 
 ## Implementation Details
 
-See [IMPLEMENTATION.md](IMPLEMENTATION.md) for a comprehensive guide covering:
-- Simulation architecture
-- Shallow water equations
-- Touch coalescing algorithm
-- Rendering pipeline
-- Performance optimization
-- Testing and validation
+See documentation for comprehensive guides:
+- [IMPLEMENTATION.md](IMPLEMENTATION.md) - Architecture and algorithms
+- [PHYSICS_MODEL.md](PHYSICS_MODEL.md) - Complete physics model, motion coupling, tuning guide
+- [CHANGES.md](CHANGES.md) - Detailed changelog
+- [VISUAL_IMPROVEMENTS.md](VISUAL_IMPROVEMENTS.md) - Visual enhancements
 
 ## Project Structure
 
@@ -79,22 +85,27 @@ WaterEffectSwift/
 └── IMPLEMENTATION.md                # Detailed documentation
 ```
 
-## Key Improvements (v2.0)
+## Key Improvements (v3.0)
 
-### Before
-- ❌ "Thousand touches" artifact from rapid input
-- ❌ Unrealistic point-source impulses
-- ❌ Simple grayscale visualization
-- ❌ No depth or lighting effects
-- ❌ Limited configurability
+### Physics Enhancements
+- ✅ 2D velocity field for realistic directional flow
+- ✅ Container boundaries with reflection and absorption
+- ✅ Device tilt-driven sloshing behavior
+- ✅ Shake detection for dramatic wave impulses
+- ✅ Anisotropic impulses for directional wakes
 
-### After
+### Visual Enhancements
+- ✅ Procedural background texture with refraction
+- ✅ Foam/whitecap generation from wave dynamics
+- ✅ Configurable rendering parameters (refraction, specular, fresnel, rim light)
+- ✅ Enhanced depth perception and lighting
+
+### Previous Improvements (v2.0)
 - ✅ Smooth, coalesced touch response
 - ✅ Gaussian impulse distribution
-- ✅ Realistic water shading with refraction
+- ✅ Realistic water shading
 - ✅ Splash particle effects
 - ✅ Extensive configuration options
-- ✅ Device motion integration
 
 ## Testing
 
@@ -123,12 +134,13 @@ This project is open source. See LICENSE for details.
 
 ## Contributing
 
-Contributions welcome! Areas for enhancement:
-- Advanced caustics rendering
-- Wind/noise fields for ambient variation
-- Foam simulation
-- Particle-to-surface feedback
-- Adaptive resolution scaling
+Contributions welcome! Future enhancement ideas:
+- Particle-to-surface feedback (secondary ripples from landing particles)
+- Advanced caustics rendering (projected onto background)
+- Curl-based micro-turbulence for added realism
+- Adaptive resolution scaling based on performance
+- Floating object interactions with buoyancy
+- Multi-layer rendering (surface, foam, subsurface)
 
 ## Credits
 
