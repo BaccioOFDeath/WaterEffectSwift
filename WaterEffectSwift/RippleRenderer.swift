@@ -8,6 +8,17 @@ struct SimParams {
     var viscosity: Float
     var waveSpeed: Float
     var dt: Float
+    var tiltBias: SIMD2<Float>
+    var boundaryDamping: Float
+}
+
+/// Visual rendering parameters
+struct RenderParams {
+    var refractionScale: Float
+    var specularStrength: Float
+    var fresnelStrength: Float
+    var rimLightIntensity: Float
+    var foamIntensity: Float
 }
 
 final class RippleRenderer {
@@ -20,7 +31,9 @@ final class RippleRenderer {
     private var heightUpdatePipeline: MTLComputePipelineState!
     private var velocityUpdatePipeline: MTLComputePipelineState!
     private var normalsPipeline: MTLComputePipelineState!
+    private var foamPipeline: MTLComputePipelineState!
     var impulsePipeline: MTLComputePipelineState!
+    var anisotropicImpulsePipeline: MTLComputePipelineState!
     
     // Render pipelines
     private var renderPipeline: MTLRenderPipelineState!
@@ -28,8 +41,10 @@ final class RippleRenderer {
     
     // Simulation textures (ping-pong buffers)
     var heightTextures: [MTLTexture] = [] // Two textures for ping-pong
-    var velocityTextures: [MTLTexture] = [] // Two textures for ping-pong
+    var velocityTextures: [MTLTexture] = [] // Two textures for ping-pong (now RG format for 2D velocity)
     var normalTexture: MTLTexture!
+    var foamTexture: MTLTexture!
+    var backgroundTexture: MTLTexture!
     
     private var currentHeightIndex = 0
     private var currentVelocityIndex = 0
@@ -77,6 +92,14 @@ final class RippleRenderer {
         
         impulsePipeline = try! device.makeComputePipelineState(
             function: library.makeFunction(name: "apply_impulse")!
+        )
+        
+        anisotropicImpulsePipeline = try! device.makeComputePipelineState(
+            function: library.makeFunction(name: "apply_impulse_anisotropic")!
+        )
+        
+        foamPipeline = try! device.makeComputePipelineState(
+            function: library.makeFunction(name: "compute_foam")!
         )
         
         // Render pipeline for water surface
@@ -149,9 +172,9 @@ final class RippleRenderer {
             device.makeTexture(descriptor: heightDesc)!
         ]
         
-        // Create velocity textures (ping-pong)
+        // Create velocity textures (ping-pong) - now RG format for 2D velocity
         let velocityDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r32Float,
+            pixelFormat: .rg32Float,
             width: simWidth,
             height: simHeight,
             mipmapped: false
@@ -175,6 +198,21 @@ final class RippleRenderer {
         normalDesc.storageMode = .shared
         
         normalTexture = device.makeTexture(descriptor: normalDesc)!
+        
+        // Create foam texture
+        let foamDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r8Unorm,
+            width: simWidth,
+            height: simHeight,
+            mipmapped: false
+        )
+        foamDesc.usage = [.shaderRead, .shaderWrite]
+        foamDesc.storageMode = .shared
+        
+        foamTexture = device.makeTexture(descriptor: foamDesc)!
+        
+        // Create background texture with a procedural pattern
+        backgroundTexture = createBackgroundTexture()
         
         // Initialize textures to zero
         initializeTextures()
@@ -202,29 +240,106 @@ final class RippleRenderer {
     }
     
     private func initializeTextures() {
+        // Initialize height textures
         let count = simWidth * simHeight
         let zeros = [Float](repeating: 0, count: count)
         let region = MTLRegionMake2D(0, 0, simWidth, simHeight)
-        let bytesPerRow = simWidth * MemoryLayout<Float>.stride
+        let bytesPerRowSingle = simWidth * MemoryLayout<Float>.stride
         
-        for tex in heightTextures + velocityTextures {
+        for tex in heightTextures {
             tex.replace(
                 region: region,
                 mipmapLevel: 0,
                 withBytes: zeros,
-                bytesPerRow: bytesPerRow
+                bytesPerRow: bytesPerRowSingle
+            )
+        }
+        
+        // Initialize velocity textures (RG format, so 2 floats per pixel)
+        let velocityZeros = [Float](repeating: 0, count: count * 2)
+        let bytesPerRowDouble = simWidth * MemoryLayout<Float>.stride * 2
+        
+        for tex in velocityTextures {
+            tex.replace(
+                region: region,
+                mipmapLevel: 0,
+                withBytes: velocityZeros,
+                bytesPerRow: bytesPerRowDouble
             )
         }
     }
     
-    /// Update the simulation: height and velocity integration, normal generation
+    private func createBackgroundTexture() -> MTLTexture {
+        let width = 512
+        let height = 512
+        
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        desc.usage = [.shaderRead]
+        desc.storageMode = .shared
+        
+        guard let texture = device.makeTexture(descriptor: desc) else {
+            fatalError("Failed to create background texture")
+        }
+        
+        // Create a procedural pattern (sand/pebble texture)
+        // Pre-allocate pixel buffer
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        
+        // Use simple deterministic hash instead of Random for performance
+        func hash2D(_ x: Int, _ y: Int) -> Float {
+            let h = UInt32(x * 73856093) ^ UInt32(y * 19349663)
+            return Float(h % 10000) / 10000.0
+        }
+        
+        for y in 0..<height {
+            for x in 0..<width {
+                let idx = (y * width + x) * 4
+                
+                // Create a subtle sand/pebble pattern with deterministic hash
+                let noise = hash2D(x, y)
+                let baseColor: Float = 0.6 + noise * 0.2
+                
+                // Add some variation with simple trig pattern
+                let patternX = Float(x) / 30.0
+                let patternY = Float(y) / 30.0
+                let pattern = sin(patternX) * cos(patternY) * 0.1 + 0.9
+                
+                let finalColor = baseColor * pattern
+                
+                // Warm sand color (beige/tan)
+                pixels[idx + 0] = UInt8(finalColor * 0.95 * 255) // R
+                pixels[idx + 1] = UInt8(finalColor * 0.85 * 255) // G
+                pixels[idx + 2] = UInt8(finalColor * 0.6 * 255)  // B
+                pixels[idx + 3] = 255 // A
+            }
+        }
+        
+        let region = MTLRegionMake2D(0, 0, width, height)
+        texture.replace(
+            region: region,
+            mipmapLevel: 0,
+            withBytes: pixels,
+            bytesPerRow: width * 4
+        )
+        
+        return texture
+    }
+    
+    /// Update the simulation: height and velocity integration, normal generation, foam
     func updateSimulation(commandBuffer: MTLCommandBuffer, config: WaterSimConfig, dt: Float, tiltBias: SIMD2<Float>) {
         // Prepare simulation parameters
         var params = SimParams(
             damping: config.damping,
             viscosity: config.viscosity,
             waveSpeed: config.waveSpeed,
-            dt: dt
+            dt: dt,
+            tiltBias: tiltBias,
+            boundaryDamping: config.boundaryDamping
         )
         
         // 1. Update velocity from height gradients
@@ -281,6 +396,20 @@ final class RippleRenderer {
         
         normalEncoder.dispatchThreadgroups(numGroups, threadsPerThreadgroup: threadsPerGroup)
         normalEncoder.endEncoding()
+        
+        // 4. Compute foam from curvature and velocity
+        guard let foamEncoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        foamEncoder.setComputePipelineState(foamPipeline)
+        
+        foamEncoder.setTexture(heightTextures[currentHeightIndex], index: 0)
+        foamEncoder.setTexture(velocityTextures[currentVelocityIndex], index: 1)
+        foamEncoder.setTexture(foamTexture, index: 2)
+        
+        var foamThreshold = config.foamThreshold
+        foamEncoder.setBytes(&foamThreshold, length: MemoryLayout<Float>.stride, index: 0)
+        
+        foamEncoder.dispatchThreadgroups(numGroups, threadsPerThreadgroup: threadsPerGroup)
+        foamEncoder.endEncoding()
     }
     
     /// Create render pass descriptor
@@ -294,12 +423,28 @@ final class RippleRenderer {
     }
     
     /// Encode render pass for water surface
-    func encodeRenderPass(_ encoder: MTLRenderCommandEncoder, size: CGSize) {
+    func encodeRenderPass(_ encoder: MTLRenderCommandEncoder, size: CGSize, config: WaterSimConfig) {
         encoder.setRenderPipelineState(renderPipeline)
         encoder.setVertexBuffer(quadBuffer, offset: 0, index: 0)
         encoder.setFragmentTexture(heightTextures[currentHeightIndex], index: 0)
         encoder.setFragmentTexture(normalTexture, index: 1)
+        encoder.setFragmentTexture(foamTexture, index: 2)
+        encoder.setFragmentTexture(backgroundTexture, index: 3)
         encoder.setFragmentSamplerState(sampler, index: 0)
+        
+        // Set visual parameters
+        var refractionScale = config.refractionScale
+        var specularStrength = config.specularStrength
+        var fresnelStrength = config.fresnelStrength
+        var rimLightIntensity = config.rimLightIntensity
+        var foamIntensity = config.foamIntensity
+        
+        encoder.setFragmentBytes(&refractionScale, length: MemoryLayout<Float>.stride, index: 0)
+        encoder.setFragmentBytes(&specularStrength, length: MemoryLayout<Float>.stride, index: 1)
+        encoder.setFragmentBytes(&fresnelStrength, length: MemoryLayout<Float>.stride, index: 2)
+        encoder.setFragmentBytes(&rimLightIntensity, length: MemoryLayout<Float>.stride, index: 3)
+        encoder.setFragmentBytes(&foamIntensity, length: MemoryLayout<Float>.stride, index: 4)
+        
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
     }
     
